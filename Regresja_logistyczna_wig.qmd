@@ -1,0 +1,232 @@
+---
+title: "polska_gielda"
+format: html
+editor: visual
+---
+
+```{r}
+library(stats)
+library(e1071)
+library(tidyverse)
+library(ISLR2)
+library(MASS)
+library(dplyr)
+```
+
+Wczytywanie i modyfikacja danych
+
+```{r}
+wig20 <- read.csv("wig_d.csv")
+
+wig20 <- wig20 %>%
+  mutate(
+    zwroty = (Zamkniecie - Otwarcie) * 100 / Otwarcie
+  ) %>%
+  mutate(
+    zam1 = lag(Zamkniecie, 1), 
+    otw1 = lag(Otwarcie, 1), 
+    otw2 = lag(Otwarcie, 2), 
+    otw3 = lag(Otwarcie, 3), 
+    otw4 = lag(Otwarcie, 4), 
+    otw5 = lag(Otwarcie, 5),
+    maks1 = lag(Najwyzszy, 1),
+    min1 = lag(Najnizszy, 1)
+  )
+
+wig20 <- wig20 %>%
+  mutate(
+    lag1 = (zam1 - otw1) * 100 / otw1,
+    lag2 = (zam1 - otw2) * 100 / otw2,
+    lag3 = (zam1 - otw3) * 100 / otw3,
+    lag4 = (zam1 - otw4) * 100 / otw4,
+    lag5 = (zam1 - otw5) * 100 / otw5
+  ) %>%
+  mutate(
+    zmiana = if_else(zwroty > 0, 1, 0)
+  )
+
+# Usunięcie pierwszych pięciu wierszy z ramki danych (nie mamy dla nich wszystkich wartości zwrotów)
+wig20 <- wig20[-c(1:5), ]
+
+# Konwersja kolumny 'Data' na typ daty
+wig20$Data <- as.Date(wig20$Data, format="%Y-%m-%d")
+```
+
+Funkcja do testowania
+
+```{r}
+alg_test <- function(start_date_tr, end_date_tr, end_date_test, L = c('Data', 'lag1', 'lag2', 'lag3', 'lag4', 'lag5', 'maks1', 'min1', 'zmiana')) {
+      #' Algorytm testowania modelu regresji logistycznej
+      #' 
+      #' @param start_date_tr Data początkowa dla zbioru treningowego (w formacie "YYYY-MM-DD").
+      #' @param end_date_tr Data końcowa dla zbioru treningowego (w formacie "YYYY-MM-DD").
+      #' @param end_date_test Data końcowa dla zbioru testowego (w formacie "YYYY-MM-DD").
+      #' @param L Lista kolumn z danymi, gdzie pierwsza kolumna to data, a ostatnia to zmiana (domyślnie c('Data', 'lag1', 'lag2', 'lag3', 'lag4', 'lag5', 'maks1', 'min1', 'zmiana')).
+      #'
+      #' @return Lista zawierająca:
+      #'   - confusion_matrix_train: Macierz pomyłek dla zbioru treningowego.
+      #'   - accuracy_train: Dokładność dla zbioru treningowego.
+      #'   - confusion_matrix_test: Macierz pomyłek dla zbioru testowego.
+      #'   - accuracy_test: Dokładność dla zbioru testowego.
+      
+  # Utworzenie zbioru treningowego
+  train <- subset(wig20, Data <= as.Date(end_date_tr) & Data >= as.Date(start_date_tr), select = L)
+  
+  # Utworzenie zbioru testowego
+  test <- subset(wig20, Data > as.Date(end_date_tr) & Data <= as.Date(end_date_test), select = L)
+  #sprawdzanie wielkości zbioru testowego
+  #print(nrow(test))
+  
+  # Wyodrębnienie Y_train i Y_test
+  Y_train <- train[, ncol(train)]
+  Y_test <- test[, ncol(test)]
+  
+  # Stworzenie formuły do modelu glm
+    formula_str <- paste("zmiana ~", paste(L[2:(length(L) - 1)], collapse = " + "))
+    formula <- as.formula(formula_str)
+  
+  # Trening modelu logistycznej regresji na zbiorze treningowym
+  glm_fits <- glm(formula, data = train, family = binomial)
+  
+  # Predykcja na zbiorze testowym
+  glm_prob_test <- predict(glm_fits, newdata = test, type = "response")
+  glm_prob_tr <- predict(glm_fits, newdata = train, type = "response")
+  
+  # Konwersja prawdopodobieństw na klasy
+  glm_pred_tr <- rep(0, nrow(train))
+  glm_pred_tr[glm_prob_tr > 0.5] <- 1
+  glm_pred_test <- rep(0, nrow(test))
+  glm_pred_test[glm_prob_test > 0.5] <- 1
+  
+  # Obliczenie macierzy pomyłek i dokładności dla zbioru treningowego
+  confusion_matrix_tr <- table(glm_pred_tr, Y_train)
+  accuracy_tr <- mean(glm_pred_tr == Y_train)
+  
+  # Obliczenie macierzy pomyłek i dokładności dla zbioru testowego
+  confusion_matrix_te <- table(glm_pred_test, Y_test)
+  accuracy_te <- mean(glm_pred_test == Y_test)
+  
+  return(list(
+    confusion_matrix_train = confusion_matrix_tr,
+    accuracy_train = accuracy_tr,
+    confusion_matrix_test = confusion_matrix_te,
+    accuracy_test = accuracy_te
+  ))
+}
+```
+
+Teraz tworzymy zbiór treningowy i testowy (trenujemy na około półrocznych danych i testujemy rok w przód)
+
+```{r}
+result <- alg_test('2004-06-20', '2004-12-31', '2005-12-31', c('Data', 'lag1', 'lag2', 'lag3', 'lag4', 'maks1', 'min1', 'zmiana'))
+
+# Wypisanie wyników
+print(result$confusion_matrix_train)
+print(paste("Accuracy_train:", result$accuracy_train))
+print(result$confusion_matrix_test)
+print(paste("Accuracy_test:", result$accuracy_test))
+
+```
+
+Teraz sprawdzimy, jakie są wyniki na testując 8 miesięcy w przód
+
+```{r}
+result <- alg_test('2004-06-20', '2004-12-31', '2005-08-31', c('Data', 'lag1', 'lag2', 'lag3', 'lag4', 'maks1', 'min1', 'zmiana'))
+
+# Wypisanie wyników
+print(result$confusion_matrix_train)
+print(paste("Accuracy_train:", result$accuracy_train))
+print(result$confusion_matrix_test)
+print(paste("Accuracy_test:", result$accuracy_test))
+```
+
+Teraz sprawdzimy, jakie są wyniki na testując 4 miesięce w przód
+
+```{r}
+result <- alg_test('2004-06-20', '2004-12-31', '2005-04-30', c('Data', 'lag1', 'lag2', 'lag3', 'lag4', 'maks1', 'min1', 'zmiana'))
+
+# Wypisanie wyników
+print(result$confusion_matrix_train)
+print(paste("Accuracy_train:", result$accuracy_train))
+print(result$confusion_matrix_test)
+print(paste("Accuracy_test:", result$accuracy_test))
+```
+
+Dwa miesiące w przód
+
+```{r}
+result <- alg_test('2004-06-20', '2004-12-31', '2005-02-28', c('Data', 'lag1', 'lag2', 'lag3', 'lag4', 'maks1', 'min1', 'zmiana'))
+
+# Wypisanie wyników
+print(result$confusion_matrix_train)
+print(paste("Accuracy_train:", result$accuracy_train))
+print(result$confusion_matrix_test)
+print(paste("Accuracy_test:", result$accuracy_test))
+```
+
+Teraz sprawdzimy, jakie są wyniki na testując 1 miesiąc w przód
+
+```{r}
+result <- alg_test('2004-06-20', '2004-12-31', '2005-01-31', c('Data', 'lag1', 'lag2', 'lag3', 'lag4', 'maks1', 'min1', 'zmiana'))
+
+# Wypisanie wyników
+print(result$confusion_matrix_train)
+print(paste("Accuracy_train:", result$accuracy_train))
+print(result$confusion_matrix_test)
+print(paste("Accuracy_test:", result$accuracy_test))
+```
+
+Dwa tygodnie w przód
+
+```{r}
+result <- alg_test('2004-06-20', '2004-12-31', '2005-01-15', c('Data', 'lag1', 'lag2', 'lag3', 'lag4', 'maks1', 'min1', 'zmiana'))
+
+# Wypisanie wyników
+print(result$confusion_matrix_train)
+print(paste("Accuracy_train:", result$accuracy_train))
+print(result$confusion_matrix_test)
+print(paste("Accuracy_test:", result$accuracy_test))
+```
+
+Tydzień w przód
+
+```{r}
+result <- alg_test('2004-06-20', '2004-12-31', '2005-01-07', c('Data', 'lag1', 'lag2', 'lag3', 'lag4', 'maks1', 'min1', 'zmiana'))
+
+# Wypisanie wyników
+print(result$confusion_matrix_train)
+print(paste("Accuracy_train:", result$accuracy_train))
+print(result$confusion_matrix_test)
+print(paste("Accuracy_test:", result$accuracy_test))
+```
+
+Tydzień do przodu do przodu na innch okresach czasu:
+
+```{r}
+result <- alg_test('2006-06-20', '2006-12-31', '2007-01-07', c('Data', 'lag1', 'lag2', 'lag3', 'lag4', 'maks1', 'min1', 'zmiana'))
+# Wypisanie wyników
+print(result$confusion_matrix_train)
+print(paste("Accuracy_train:", result$accuracy_train))
+print(result$confusion_matrix_test)
+print(paste("Accuracy_test:", result$accuracy_test))
+```
+
+```{r}
+result <- alg_test('2010-06-20', '2010-12-31', '2011-01-07', c('Data', 'lag1', 'lag2', 'lag3', 'lag4', 'maks1', 'min1', 'zmiana'))
+# Wypisanie wyników
+print(result$confusion_matrix_train)
+print(paste("Accuracy_train:", result$accuracy_train))
+print(result$confusion_matrix_test)
+print(paste("Accuracy_test:", result$accuracy_test))
+```
+
+Trenowanie na połowie danych i testowanie na połowie
+
+```{r}
+result <- alg_test('2004-06-20', '2014-06-20', '2024-06-20', c('Data', 'lag1', 'lag2', 'lag3', 'lag4', 'maks1', 'min1', 'zmiana'))
+# Wypisanie wyników
+print(result$confusion_matrix_train)
+print(paste("Accuracy_train:", result$accuracy_train))
+print(result$confusion_matrix_test)
+print(paste("Accuracy_test:", result$accuracy_test))
+```
